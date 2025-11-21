@@ -15,6 +15,8 @@ enum HandleType {
   topRight,
   bottomLeft,
   bottomRight,
+  centerLeft, // New
+  centerRight, // New
   rotate,
 }
 
@@ -38,6 +40,9 @@ class _EditorCanvasState extends State<EditorCanvas> {
   double? _initialScale;
   double? _initialDistance; // For Scaling
 
+  // New for Side Dragging
+  double? _initialWidth;
+
   SystemMouseCursor _cursor = SystemMouseCursors.basic;
 
   final FocusNode _textFocusNode = FocusNode();
@@ -45,6 +50,9 @@ class _EditorCanvasState extends State<EditorCanvas> {
   Timer? _cursorTimer;
 
   bool _isTextSelectionDragging = false;
+
+  // New for Anchor Selection
+  TextSelection? _initialSelection;
 
   @override
   void initState() {
@@ -143,6 +151,7 @@ class _EditorCanvasState extends State<EditorCanvas> {
                         _isTextSelectionDragging = false;
                         _textFocusNode.requestFocus();
                       }
+                      _initialSelection = null;
                     },
 
                     child: CustomPaint(
@@ -163,7 +172,10 @@ class _EditorCanvasState extends State<EditorCanvas> {
               child: TextField(
                 focusNode: _textFocusNode,
                 controller: _textController,
-                maxLines: null,
+                maxLines: null, // Fix 2: Keyboard Issue
+                keyboardType: TextInputType.multiline,
+                textInputAction: TextInputAction.newline,
+                enableIMEPersonalizedLearning: true,
                 autocorrect: false,
                 enableSuggestions: false,
               ),
@@ -183,7 +195,6 @@ class _EditorCanvasState extends State<EditorCanvas> {
   }
 
   /// **Global Space Hit Testing (The Fix for "Shrinking Hit Box")**
-  /// આપણે હેન્ડલ્સને સ્ક્રીન પર ક્યાં છે તે શોધીએ છીએ અને પછી ચેક કરીએ છીએ.
   HandleType _getHandleAtPoint(BaseLayer layer, Offset globalTouch) {
     // લેયરની સાઈઝ
     final halfW = layer.size.width / 2;
@@ -193,13 +204,14 @@ class _EditorCanvasState extends State<EditorCanvas> {
     final matrix = layer.matrix;
 
     // હેન્ડલ્સના Local Coordinates
-    // (rotationHandleDistance અને handleRadius models.dart માંથી આવે છે)
-    // આપણે models.dart માં CamelCase કર્યું હતું, તે અહીં વાપરવું.
     final localMap = {
       HandleType.topLeft: Offset(-halfW, -halfH),
       HandleType.topRight: Offset(halfW, -halfH),
       HandleType.bottomLeft: Offset(-halfW, halfH),
       HandleType.bottomRight: Offset(halfW, halfH),
+      // NEW HANDLES
+      HandleType.centerLeft: Offset(-halfW, 0),
+      HandleType.centerRight: Offset(halfW, 0),
       HandleType.rotate: Offset(
         0,
         -halfH - (rotationHandleDistance / layer.scale),
@@ -213,14 +225,13 @@ class _EditorCanvasState extends State<EditorCanvas> {
       final globalVec = matrix.transform3(Vector3(localPos.dx, localPos.dy, 0));
       final globalPos = Offset(globalVec.x, globalVec.y);
 
-      // હવે Distance ચેક કરો. આ TOUCH_TOLERANCE ફિક્સ છે (30px).
-      // લેયર નાનું હોય તો પણ આ 30px જ રહેશે.
+      // Distance ચેક કરો.
       if ((globalTouch - globalPos).distance <= TOUCH_TOLERANCE) {
         return entry.key;
       }
     }
 
-    // Body Check (આના માટે Inverse Matrix બરાબર છે)
+    // Body Check
     if (_isPointInsideLayer(layer, globalTouch)) {
       return HandleType.body;
     }
@@ -238,8 +249,7 @@ class _EditorCanvasState extends State<EditorCanvas> {
     final halfW = layer.size.width / 2;
     final halfH = layer.size.height / 2;
     final rect = Rect.fromLTRB(-halfW, -halfH, halfW, halfH);
-    // Body Hit Test માટે થોડું પેડિંગ આપો જેથી પકડવામાં સરળતા રહે
-    // Increased to TOUCH_TOLERANCE for better touch handling
+
     return rect
         .inflate(TOUCH_TOLERANCE / 2)
         .contains(Offset(point3.x, point3.y));
@@ -250,33 +260,33 @@ class _EditorCanvasState extends State<EditorCanvas> {
   void _handleTouchStart(Offset localPoint) {
     HandleType foundHandle = HandleType.none;
 
-    // પહેલા Active Layer પર હેન્ડલ્સ ચેક કરો
     if (activeLayer != null) {
       foundHandle = _getHandleAtPoint(activeLayer!, localPoint);
     }
 
     // SMART EDITING LOGIC
     if (activeLayer is TextLayer && activeLayer!.isEditing) {
-      // જો ખૂણો કે રોટેશન પકડ્યું છે -> Allow
       if (foundHandle != HandleType.none && foundHandle != HandleType.body) {
-        // Pass through to math init below
+        // Pass through to math init
       }
-      // જો બોડી પકડી છે -> Text Selection Drag (Move નહિ)
       else if (_isPointInsideLayer(activeLayer!, localPoint)) {
         _isTextSelectionDragging = true;
         final index = _getTextIndexFromTouch(
           activeLayer as TextLayer,
           localPoint,
         );
+
+        // Start Anchor Selection Logic
         final newSelection = TextSelection.collapsed(offset: index);
         _textController.selection = newSelection;
         (activeLayer as TextLayer).selection = newSelection;
+        _initialSelection = newSelection; // Capture anchor
+
         _currentHandle = HandleType.body;
         return;
       }
     }
 
-    // Layer Switching / Selection
     if (foundHandle == HandleType.none) {
       final clickedLayer = _findLayerAt(localPoint);
       if (clickedLayer != null) {
@@ -294,21 +304,20 @@ class _EditorCanvasState extends State<EditorCanvas> {
       }
     }
 
-    // --- FIX: Rotation & Scaling Math ---
     if (activeLayer != null) {
       _initialRotationLayer = activeLayer!.rotation;
 
-      // રોટેશન ગણતરી લેયરના સેન્ટર (Position) થી થવી જોઈએ
       _initialRotationTouch = math.atan2(
         localPoint.dy - activeLayer!.position.dy,
         localPoint.dx - activeLayer!.position.dx,
       );
 
       _initialScale = activeLayer!.scale;
-
-      // સ્કેલિંગ ગણતરી પણ લેયરના સેન્ટરથી થવી જોઈએ (Distance from Object Center)
-      // જૂના કોડમાં Screen Center થી થતી હતી જે ભૂલ હતી
       _initialDistance = (localPoint - activeLayer!.position).distance;
+
+      if (activeLayer is TextLayer) {
+         _initialWidth = (activeLayer as TextLayer).size.width;
+      }
     }
 
     setState(() {
@@ -320,21 +329,24 @@ class _EditorCanvasState extends State<EditorCanvas> {
   void _handleTouchUpdate(Offset localPoint) {
     if (activeLayer == null) return;
 
-    // Text Selection
+    // Text Selection (Drag to Expand)
     if (_isTextSelectionDragging && activeLayer is TextLayer) {
       final index = _getTextIndexFromTouch(
         activeLayer as TextLayer,
         localPoint,
       );
-      final currentBase = _textController.selection.baseOffset;
-      final newSelection = TextSelection(
-        baseOffset: currentBase,
-        extentOffset: index,
-      );
-      _textController.selection = newSelection;
-      setState(() {
-        (activeLayer as TextLayer).selection = newSelection;
-      });
+
+      if (_initialSelection != null) {
+        // Anchor Logic: Keep base, update extent
+        final newSelection = TextSelection(
+          baseOffset: _initialSelection!.baseOffset,
+          extentOffset: index,
+        );
+        _textController.selection = newSelection;
+        setState(() {
+          (activeLayer as TextLayer).selection = newSelection;
+        });
+      }
       return;
     }
 
@@ -347,39 +359,58 @@ class _EditorCanvasState extends State<EditorCanvas> {
             final delta = localPoint - _lastTouchLocalPoint!;
             activeLayer!.position += delta;
           }
-          // Move માટે આપણે last point અપડેટ કરીએ છીએ
           _lastTouchLocalPoint = localPoint;
           break;
 
         case HandleType.rotate:
-          // Rotation relative to Object Center
           final currentTouchAngle = math.atan2(
             localPoint.dy - activeLayer!.position.dy,
             localPoint.dx - activeLayer!.position.dx,
           );
           final angleDelta = currentTouchAngle - _initialRotationTouch!;
           activeLayer!.rotation = _initialRotationLayer! + angleDelta;
-          // Rotate/Scale માં last point અપડેટ કરવાની જરૂર નથી હોતી કારણ કે આપણે initial થી ગણીએ છીએ
           break;
 
         case HandleType.bottomRight:
         case HandleType.topRight:
         case HandleType.bottomLeft:
         case HandleType.topLeft:
-          // Scaling relative to Object Center
           final currentDist = (localPoint - activeLayer!.position).distance;
           if (_initialDistance != null && _initialDistance! > 0) {
             final scaleFactor = currentDist / _initialDistance!;
             activeLayer!.scale = _initialScale! * scaleFactor;
           }
           break;
+
+        case HandleType.centerLeft:
+        case HandleType.centerRight:
+           // Smart Resizing: Change Width only, keep Scale 1.0 (or current scale)
+           // Logic: distance from center in x-axis * 2
+           // We need to convert localPoint (global) to layer local
+           if (activeLayer is TextLayer) {
+             final layer = activeLayer as TextLayer;
+
+             // Inverse transform to get local X distance
+             final matrix = layer.matrix;
+             final inverse = Matrix4.tryInvert(matrix);
+             if (inverse != null) {
+               final localP = inverse.transform3(Vector3(localPoint.dx, localPoint.dy, 0));
+               final newWidth = localP.x.abs() * 2;
+               // Minimum width to avoid glitches
+               if (newWidth > 20) {
+                 layer.customWidth = newWidth;
+               }
+             }
+           }
+           break;
+
         default:
           break;
       }
     });
   }
 
-  // --- 3. Other Helpers (Tap, Text Index, Find Layer) ---
+  // --- 3. Other Helpers ---
 
   int _getTextIndexFromTouch(TextLayer layer, Offset globalTouch) {
     final matrix = layer.matrix;
@@ -390,16 +421,58 @@ class _EditorCanvasState extends State<EditorCanvas> {
     );
     final localCenterPoint = Offset(point3.x, point3.y);
 
-    final textPainter = TextPainter(
+    // Adjust for paint offset logic (which centers the text)
+    // The painter was painted at (-W/2, -H/2).
+    // So local (0,0) is the center of the text.
+    // TextPainter coordinates start at (0,0) being top-left.
+    // So we need to shift our local point by (W/2, H/2) to match painter coords.
+
+    // Note: layer.size is now the "effective" size (possibly scaled/wrapped).
+    // If scaled (fitScale < 1.0), the textPainter is actually LARGER (intrinsic).
+    // BUT we scaled the canvas.
+    // When we use `inverse` matrix, we are effectively "un-scaling" the global touch if the layer.scale was applied.
+    // Wait, layer.matrix includes `layer.scale`. It does NOT include `fitScale` which is internal to paint().
+
+    // If `fitScale` is active, the visual content is smaller than intrinsic.
+    // Our `inverse` gives us coordinates in the layer's space (where scale=1 relative to layer).
+    // But inside paint(), we did `canvas.scale(fitScale)`.
+    // So the content is drawn at `fitScale` size.
+    // So a point `p` in layer space corresponds to `p / fitScale` in painter space?
+
+    // Let's check `paint()`:
+    // canvas.scale(fitScale, fitScale);
+    // textPainter.paint(canvas, intrinsicOffset);
+
+    // So if I touch at 100 (layer space), and fitScale is 0.5.
+    // Visual point is 100.
+    // In painter space, that should be 200.
+    // So we need to divide by fitScale.
+
+    double fitScale = layer.debugFitScale; // Using the exposed debug property or recalculate
+    if (fitScale == 0) fitScale = 1.0;
+
+    // Also need the intrinsic size for the offset shift
+    final intrinsicPainter = TextPainter(
       text: TextSpan(text: layer.text, style: layer.style),
       textDirection: TextDirection.ltr,
     );
-    textPainter.layout();
+    // Apply wrapping if needed to match what was painted
+    if (layer.customWidth != null && layer.text.contains(' ')) {
+       intrinsicPainter.layout(maxWidth: layer.customWidth!);
+    } else {
+       intrinsicPainter.layout();
+    }
 
-    final dx = localCenterPoint.dx + (textPainter.width / 2);
-    final dy = localCenterPoint.dy + (textPainter.height / 2);
-    return textPainter
-        .getPositionForOffset(Offset(dx, dy))
+    // The offset used in paint was (-width/2, -height/2)
+    final halfW = intrinsicPainter.width / 2;
+    final halfH = intrinsicPainter.height / 2;
+
+    // Transform local point to painter space
+    final painterX = (localCenterPoint.dx / fitScale) + halfW;
+    final painterY = (localCenterPoint.dy / fitScale) + halfH;
+
+    return intrinsicPainter
+        .getPositionForOffset(Offset(painterX, painterY))
         .offset
         .clamp(0, layer.text.length);
   }
@@ -543,6 +616,10 @@ class _EditorCanvasState extends State<EditorCanvas> {
       case HandleType.topRight:
       case HandleType.bottomLeft:
         newCursor = SystemMouseCursors.resizeUpRightDownLeft;
+        break;
+      case HandleType.centerLeft:
+      case HandleType.centerRight:
+        newCursor = SystemMouseCursors.resizeLeftRight;
         break;
       case HandleType.rotate:
         newCursor = SystemMouseCursors.click;
