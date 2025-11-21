@@ -21,8 +21,10 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
-          flutter-version: '3.24.3'
+          # અહી 'stable' ની જગ્યાએ 'master' કર્યું છે કારણ કે 3.38.2 હજુ સ્ટેબલ નથી
+          channel: 'master'
+          # એરર મેસેજ મુજબ નવું વર્ઝન સેટ કર્યું છે
+          flutter-version: '3.38.2'
 
       - name: Get Dependencies
         run: flutter pub get
