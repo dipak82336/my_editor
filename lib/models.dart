@@ -98,12 +98,28 @@ class TextLayer extends BaseLayer {
       }
       // Scenario B (Long Word): If NO spaces and textWidth > customWidth, auto-fit
       else if (enableAutoFit && maxIntrinsicWidth > customWidth!) {
-        fitScale = customWidth! / maxIntrinsicWidth;
+        // SMART CONSTRAINT: Unbounded Box
+        // If customWidth is LARGER than intrinsic, we do NOT scale up.
+        // We only scale DOWN.
+
+        // Also add SAFETY MARGIN (8px)
+        final effectiveWidth = customWidth! - 8.0;
+
+        // If customWidth is very small (e.g. < 8), effectiveWidth is negative.
+        // We must ensure a minimum effective width to avoid crash or negative scale.
+        final safeEffectiveWidth = effectiveWidth > 1.0 ? effectiveWidth : 1.0;
+
+        if (safeEffectiveWidth < maxIntrinsicWidth) {
+           fitScale = safeEffectiveWidth / maxIntrinsicWidth;
+        } else {
+           // Text fits comfortably, no scaling needed.
+           fitScale = 1.0;
+        }
       } else {
-        // Fallback for single word that fits or auto-fit disabled
-        // Just center it, maybe restrict width if you want clipping,
-        // but typically single words overflow if not scaled.
-        // Here we act like standard text unless scaled.
+        // Fallback: If Custom Width is set but text fits, OR auto-fit disabled.
+        // UNBOUNDED BOX LOGIC:
+        // If customWidth is defined, and it's larger than intrinsic, we should use customWidth for the border
+        // but draw text centered/unscaled.
       }
     }
 
@@ -122,6 +138,14 @@ class TextLayer extends BaseLayer {
     }
 
     _cachedSize = textPainter.size;
+
+    // UNBOUNDED BOX FIX:
+    // If customWidth is set and larger than intrinsic size, we want the "Box" (cachedSize) to match customWidth.
+    // The text will be drawn centered within it.
+    if (customWidth != null && customWidth! > _cachedSize.width) {
+      // Create a size that respects customWidth but keeps height (unless wrapping changed height)
+      _cachedSize = Size(customWidth!, _cachedSize.height);
+    }
 
     // If we are scaling down a single word, the visual size is effectively smaller
     // but the painter reports original size. We need to adjust drawing.
@@ -145,7 +169,19 @@ class TextLayer extends BaseLayer {
       // If I leave _cachedSize as intrinsic size, the border will be drawn around the large intrinsic text,
       // but the text itself is scaled down.
       // To make it look "fitted", I should update _cachedSize to the Scaled size.
-      _cachedSize = _cachedSize * fitScale;
+
+      // BUT if we are in "Unbounded Box" mode (customWidth > width), we just updated _cachedSize above.
+      // If fitScale < 1.0, it means we are shrinking to fit customWidth.
+      // So _cachedSize should be customWidth?
+      // Yes: fitScale = customWidth / intrinsic.
+      // intrinsic * fitScale = customWidth.
+      // So effectively _cachedSize is correct if we assume it matches customWidth.
+
+      // Actually, if we scale the canvas, we scale everything drawn.
+      // So if _cachedSize = Intrinsic, and we scale by 0.5. The visual size is Intrinsic * 0.5.
+      // Which equals CustomWidth.
+      // So we should update _cachedSize to match the visual size.
+      _cachedSize = Size(textPainter.width * fitScale, textPainter.height * fitScale);
     }
 
     final paintOffset = Offset(-_cachedSize.width / 2, -_cachedSize.height / 2);

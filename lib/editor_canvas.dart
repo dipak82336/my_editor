@@ -384,25 +384,68 @@ class _EditorCanvasState extends State<EditorCanvas> {
 
         case HandleType.centerLeft:
         case HandleType.centerRight:
-           // Smart Resizing: Change Width only, keep Scale 1.0 (or current scale)
-           // Logic: distance from center in x-axis * 2
-           // We need to convert localPoint (global) to layer local
-           if (activeLayer is TextLayer) {
-             final layer = activeLayer as TextLayer;
+          // ANCHORED RESIZING
+          if (activeLayer is TextLayer) {
+            final layer = activeLayer as TextLayer;
 
-             // Inverse transform to get local X distance
-             final matrix = layer.matrix;
-             final inverse = Matrix4.tryInvert(matrix);
-             if (inverse != null) {
-               final localP = inverse.transform3(Vector3(localPoint.dx, localPoint.dy, 0));
-               final newWidth = localP.x.abs() * 2;
-               // Minimum width to avoid glitches
-               if (newWidth > 20) {
-                 layer.customWidth = newWidth;
-               }
-             }
-           }
-           break;
+            // We need delta in GLOBAL space, but projected onto layer's axis if rotated.
+            // Simplified: Assume mostly upright or handle delta directly?
+            // "Anchor" logic requires moving Center.
+
+            // 1. Calculate Delta in Global Space
+            if (_lastTouchLocalPoint != null) {
+              // Note: We need to account for rotation to get "Width" delta correctly.
+              // Vector from Last -> Curr
+              final globalDelta = localPoint - _lastTouchLocalPoint!;
+
+              // Project delta onto Layer's X-axis (Rotation)
+              final angle = layer.rotation;
+              final cos = math.cos(angle);
+              final sin = math.sin(angle);
+
+              // Rotate delta inversely to align with layer axis
+              // dx' = dx * cos + dy * sin
+              // dy' = -dx * sin + dy * cos (not needed for width)
+              final localDeltaX =
+                  globalDelta.dx * cos + globalDelta.dy * sin;
+
+              // 2. Logic Table
+              double newWidth = layer.customWidth ?? layer.size.width;
+              // If customWidth is null, init it.
+              if (layer.customWidth == null) layer.customWidth = newWidth;
+
+              // We also need to move the center position (layer.position)
+              // The shift is globalDelta / 2 in the direction of the handle?
+              // No, let's follow the verified math:
+              // Right Handle: newWidth = w + delta. Center Shift = delta/2.
+              // Left Handle: newWidth = w - delta. Center Shift = delta/2.
+              // "Center Shift" here must be rotated back to global space.
+
+              double widthChange = 0;
+              if (_currentHandle == HandleType.centerRight) {
+                widthChange = localDeltaX;
+              } else {
+                widthChange = -localDeltaX;
+              }
+
+              final proposedWidth = newWidth + widthChange;
+
+              if (proposedWidth > 20) {
+                layer.customWidth = proposedWidth;
+
+                // Center Shift (Local X axis)
+                final centerShiftLocalX = localDeltaX / 2;
+
+                // Rotate shift back to Global
+                final shiftDx = centerShiftLocalX * cos;
+                final shiftDy = centerShiftLocalX * sin;
+
+                layer.position += Offset(shiftDx, shiftDy);
+              }
+            }
+          }
+          _lastTouchLocalPoint = localPoint;
+          break;
 
         default:
           break;
