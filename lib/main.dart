@@ -47,6 +47,7 @@ class EditorPageState extends State<EditorPage> {
             color: Colors.black,
             fontWeight: FontWeight.bold,
           ),
+          boxWidth: 400.0, // Initial box width
         ),
         TextLayer(
           id: '2',
@@ -54,6 +55,7 @@ class EditorPageState extends State<EditorPage> {
           position: const Offset(0, 200),
           rotation: -0.1,
           style: const TextStyle(fontSize: 40, color: Colors.purple),
+          boxWidth: 350.0, // Initial box width
         ),
       ],
     );
