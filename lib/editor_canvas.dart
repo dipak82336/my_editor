@@ -5,8 +5,8 @@ import 'dart:math' as math;
 import 'dart:async';
 import 'models.dart';
 
-// મોબાઈલ માટે ટચ એરિયા મોટો રાખવો પડે (45px જેવો)
-const double TOUCH_TOLERANCE = 40.0;
+// Constants
+const double kTouchTolerance = 40.0;
 
 enum HandleType {
   none,
@@ -15,8 +15,8 @@ enum HandleType {
   topRight,
   bottomLeft,
   bottomRight,
-  centerLeft, // New
-  centerRight, // New
+  centerLeft,
+  centerRight,
   rotate,
 }
 
@@ -38,10 +38,10 @@ class _EditorCanvasState extends State<EditorCanvas> {
   double? _initialRotationLayer;
   double? _initialRotationTouch;
   double? _initialScale;
-  double? _initialDistance; // For Scaling
+  double? _initialDistance;
 
-  // New for Side Dragging
-  double? _initialWidth;
+  // Selection Anchoring
+  TextSelection? _initialSelection;
 
   SystemMouseCursor _cursor = SystemMouseCursors.basic;
 
@@ -50,9 +50,6 @@ class _EditorCanvasState extends State<EditorCanvas> {
   Timer? _cursorTimer;
 
   bool _isTextSelectionDragging = false;
-
-  // New for Anchor Selection
-  TextSelection? _initialSelection;
 
   @override
   void initState() {
@@ -77,6 +74,7 @@ class _EditorCanvasState extends State<EditorCanvas> {
           textLayer.text = _textController.text;
         });
       }
+      // Only sync selection if we are NOT actively dragging (to avoid fighting)
       if (!_isTextSelectionDragging &&
           textLayer.selection != _textController.selection) {
         setState(() {
@@ -172,7 +170,7 @@ class _EditorCanvasState extends State<EditorCanvas> {
               child: TextField(
                 focusNode: _textFocusNode,
                 controller: _textController,
-                maxLines: null, // Fix 2: Keyboard Issue
+                maxLines: null, // Pro-Grade Keyboard
                 keyboardType: TextInputType.multiline,
                 textInputAction: TextInputAction.newline,
                 enableIMEPersonalizedLearning: true,
@@ -186,7 +184,7 @@ class _EditorCanvasState extends State<EditorCanvas> {
     );
   }
 
-  // --- 1. New & Improved Math Logic ---
+  // --- 1. Math Helpers ---
 
   Offset _getLocalPoint(BuildContext context, Offset focalPoint) {
     final dx = focalPoint.dx - (widget.composition.dimension.width / 2);
@@ -194,44 +192,34 @@ class _EditorCanvasState extends State<EditorCanvas> {
     return Offset(dx, dy);
   }
 
-  /// **Global Space Hit Testing (The Fix for "Shrinking Hit Box")**
   HandleType _getHandleAtPoint(BaseLayer layer, Offset globalTouch) {
-    // લેયરની સાઈઝ
     final halfW = layer.size.width / 2;
     final halfH = layer.size.height / 2;
-
-    // લેયરનું મેટ્રિક્સ
     final matrix = layer.matrix;
 
-    // હેન્ડલ્સના Local Coordinates
     final localMap = {
       HandleType.topLeft: Offset(-halfW, -halfH),
       HandleType.topRight: Offset(halfW, -halfH),
       HandleType.bottomLeft: Offset(-halfW, halfH),
       HandleType.bottomRight: Offset(halfW, halfH),
-      // NEW HANDLES
       HandleType.centerLeft: Offset(-halfW, 0),
       HandleType.centerRight: Offset(halfW, 0),
       HandleType.rotate: Offset(
         0,
-        -halfH - (rotationHandleDistance / layer.scale),
+        -halfH - (kRotationHandleDistance / layer.scale),
       ),
     };
 
-    // હેન્ડલ્સ ચેક કરો (Global Space માં)
     for (var entry in localMap.entries) {
       final localPos = entry.value;
-      // Local Point ને Global Matrix થી ટ્રાન્સફોર્મ કરો
       final globalVec = matrix.transform3(Vector3(localPos.dx, localPos.dy, 0));
       final globalPos = Offset(globalVec.x, globalVec.y);
 
-      // Distance ચેક કરો.
-      if ((globalTouch - globalPos).distance <= TOUCH_TOLERANCE) {
+      if ((globalTouch - globalPos).distance <= kTouchTolerance) {
         return entry.key;
       }
     }
 
-    // Body Check
     if (_isPointInsideLayer(layer, globalTouch)) {
       return HandleType.body;
     }
@@ -251,11 +239,11 @@ class _EditorCanvasState extends State<EditorCanvas> {
     final rect = Rect.fromLTRB(-halfW, -halfH, halfW, halfH);
 
     return rect
-        .inflate(TOUCH_TOLERANCE / 2)
+        .inflate(kTouchTolerance / 2)
         .contains(Offset(point3.x, point3.y));
   }
 
-  // --- 2. Touch Handlers ---
+  // --- 2. Interaction Logic ---
 
   void _handleTouchStart(Offset localPoint) {
     HandleType foundHandle = HandleType.none;
@@ -264,26 +252,22 @@ class _EditorCanvasState extends State<EditorCanvas> {
       foundHandle = _getHandleAtPoint(activeLayer!, localPoint);
     }
 
-    // SMART EDITING LOGIC
+    // Smart Editing Logic (Text Selection vs Drag)
     if (activeLayer is TextLayer && activeLayer!.isEditing) {
-      if (foundHandle != HandleType.none && foundHandle != HandleType.body) {
-        // Pass through to math init
-      }
-      else if (_isPointInsideLayer(activeLayer!, localPoint)) {
-        _isTextSelectionDragging = true;
-        final index = _getTextIndexFromTouch(
-          activeLayer as TextLayer,
-          localPoint,
-        );
+      if (foundHandle == HandleType.none || foundHandle == HandleType.body) {
+         if (_isPointInsideLayer(activeLayer!, localPoint)) {
+            _isTextSelectionDragging = true;
+            final index = _getTextIndexFromTouch(activeLayer as TextLayer, localPoint);
 
-        // Start Anchor Selection Logic
-        final newSelection = TextSelection.collapsed(offset: index);
-        _textController.selection = newSelection;
-        (activeLayer as TextLayer).selection = newSelection;
-        _initialSelection = newSelection; // Capture anchor
+            // Anchor Selection
+            final newSelection = TextSelection.collapsed(offset: index);
+            _textController.selection = newSelection;
+            (activeLayer as TextLayer).selection = newSelection;
+            _initialSelection = newSelection;
 
-        _currentHandle = HandleType.body;
-        return;
+            _currentHandle = HandleType.body;
+            return;
+         }
       }
     }
 
@@ -306,18 +290,12 @@ class _EditorCanvasState extends State<EditorCanvas> {
 
     if (activeLayer != null) {
       _initialRotationLayer = activeLayer!.rotation;
-
       _initialRotationTouch = math.atan2(
         localPoint.dy - activeLayer!.position.dy,
         localPoint.dx - activeLayer!.position.dx,
       );
-
       _initialScale = activeLayer!.scale;
       _initialDistance = (localPoint - activeLayer!.position).distance;
-
-      if (activeLayer is TextLayer) {
-         _initialWidth = (activeLayer as TextLayer).size.width;
-      }
     }
 
     setState(() {
@@ -329,15 +307,11 @@ class _EditorCanvasState extends State<EditorCanvas> {
   void _handleTouchUpdate(Offset localPoint) {
     if (activeLayer == null) return;
 
-    // Text Selection (Drag to Expand)
+    // Text Selection
     if (_isTextSelectionDragging && activeLayer is TextLayer) {
-      final index = _getTextIndexFromTouch(
-        activeLayer as TextLayer,
-        localPoint,
-      );
-
+      final index = _getTextIndexFromTouch(activeLayer as TextLayer, localPoint);
       if (_initialSelection != null) {
-        // Anchor Logic: Keep base, update extent
+        // Expand from anchor
         final newSelection = TextSelection(
           baseOffset: _initialSelection!.baseOffset,
           extentOffset: index,
@@ -371,6 +345,7 @@ class _EditorCanvasState extends State<EditorCanvas> {
           activeLayer!.rotation = _initialRotationLayer! + angleDelta;
           break;
 
+        // CORNER HANDLES = UNIFORM SCALE (ZOOM)
         case HandleType.bottomRight:
         case HandleType.topRight:
         case HandleType.bottomLeft:
@@ -382,67 +357,61 @@ class _EditorCanvasState extends State<EditorCanvas> {
           }
           break;
 
+        // SIDE HANDLES = ANCHORED RESIZING
         case HandleType.centerLeft:
         case HandleType.centerRight:
-          // ANCHORED RESIZING
           if (activeLayer is TextLayer) {
-            final layer = activeLayer as TextLayer;
+             final layer = activeLayer as TextLayer;
 
-            // We need delta in GLOBAL space, but projected onto layer's axis if rotated.
-            // Simplified: Assume mostly upright or handle delta directly?
-            // "Anchor" logic requires moving Center.
+             // 1. Calculate Global Delta
+             final globalDelta = localPoint - _lastTouchLocalPoint!;
 
-            // 1. Calculate Delta in Global Space
-            if (_lastTouchLocalPoint != null) {
-              // Note: We need to account for rotation to get "Width" delta correctly.
-              // Vector from Last -> Curr
-              final globalDelta = localPoint - _lastTouchLocalPoint!;
+             // 2. Project onto Layer's Local X-Axis
+             final angle = layer.rotation;
+             final cos = math.cos(angle);
+             final sin = math.sin(angle);
 
-              // Project delta onto Layer's X-axis (Rotation)
-              final angle = layer.rotation;
-              final cos = math.cos(angle);
-              final sin = math.sin(angle);
+             // Local Delta X (Along the width of the box)
+             final localDeltaX = globalDelta.dx * cos + globalDelta.dy * sin;
 
-              // Rotate delta inversely to align with layer axis
-              // dx' = dx * cos + dy * sin
-              // dy' = -dx * sin + dy * cos (not needed for width)
-              final localDeltaX =
-                  globalDelta.dx * cos + globalDelta.dy * sin;
+             // 3. Determine Width Change & Center Shift
+             // Right Handle: +Width, +Center (Rightward)
+             // Left Handle:  +Width (if moving Left, i.e., neg Delta), +Center (Leftward)
 
-              // 2. Logic Table
-              double newWidth = layer.customWidth ?? layer.size.width;
-              // If customWidth is null, init it.
-              if (layer.customWidth == null) layer.customWidth = newWidth;
+             double widthChange = 0.0;
+             double centerShiftLocalX = 0.0;
 
-              // We also need to move the center position (layer.position)
-              // The shift is globalDelta / 2 in the direction of the handle?
-              // No, let's follow the verified math:
-              // Right Handle: newWidth = w + delta. Center Shift = delta/2.
-              // Left Handle: newWidth = w - delta. Center Shift = delta/2.
-              // "Center Shift" here must be rotated back to global space.
+             if (_currentHandle == HandleType.centerRight) {
+               // Dragging Right Handle
+               widthChange = localDeltaX;
+               // To keep Left edge fixed, center moves by half the growth
+               centerShiftLocalX = localDeltaX / 2.0;
+             } else {
+               // Dragging Left Handle
+               // If we move Left (neg delta), width increases.
+               widthChange = -localDeltaX;
+               // To keep Right edge fixed, center moves Left by half the growth
+               // Since localDeltaX is negative when moving left,
+               // we want center to move left.
+               centerShiftLocalX = localDeltaX / 2.0;
+             }
 
-              double widthChange = 0;
-              if (_currentHandle == HandleType.centerRight) {
-                widthChange = localDeltaX;
-              } else {
-                widthChange = -localDeltaX;
-              }
+             // 4. Apply Changes
+             double currentWidth = layer.customWidth ?? layer.size.width;
+             // If transitioning from auto-size to fixed-size, initialize customWidth
+             if (layer.customWidth == null) layer.customWidth = currentWidth;
 
-              final proposedWidth = newWidth + widthChange;
+             double newWidth = currentWidth + widthChange;
 
-              if (proposedWidth > 20) {
-                layer.customWidth = proposedWidth;
+             if (newWidth >= 20.0) {
+               layer.customWidth = newWidth;
 
-                // Center Shift (Local X axis)
-                final centerShiftLocalX = localDeltaX / 2;
+               // Rotate center shift back to global
+               final shiftDx = centerShiftLocalX * cos;
+               final shiftDy = centerShiftLocalX * sin;
 
-                // Rotate shift back to Global
-                final shiftDx = centerShiftLocalX * cos;
-                final shiftDy = centerShiftLocalX * sin;
-
-                layer.position += Offset(shiftDx, shiftDy);
-              }
-            }
+               layer.position += Offset(shiftDx, shiftDy);
+             }
           }
           _lastTouchLocalPoint = localPoint;
           break;
@@ -453,80 +422,60 @@ class _EditorCanvasState extends State<EditorCanvas> {
     });
   }
 
-  // --- 3. Other Helpers ---
+  // --- 3. Helpers ---
 
   int _getTextIndexFromTouch(TextLayer layer, Offset globalTouch) {
+    // We need to map global touch to the text painter's coordinate system.
+    // Layer Matrix transforms: Local(0,0)=Center -> Global.
+    // Paint Logic transforms: TextPainter(0,0)=TopLeft -> Local(Centered).
+
+    // 1. Global -> Local (Layer Center)
     final matrix = layer.matrix;
     final inverse = Matrix4.tryInvert(matrix);
     if (inverse == null) return 0;
+
     final point3 = inverse.transform3(
       Vector3(globalTouch.dx, globalTouch.dy, 0),
     );
-    final localCenterPoint = Offset(point3.x, point3.y);
+    final localPoint = Offset(point3.x, point3.y);
 
-    // Adjust for paint offset logic (which centers the text)
-    // The painter was painted at (-W/2, -H/2).
-    // So local (0,0) is the center of the text.
-    // TextPainter coordinates start at (0,0) being top-left.
-    // So we need to shift our local point by (W/2, H/2) to match painter coords.
+    // 2. Local -> Visual Text Coordinates
+    // The paint logic in `models.dart` applies "centering" and "fitScale".
+    // We need to reverse that.
 
-    // Note: layer.size is now the "effective" size (possibly scaled/wrapped).
-    // If scaled (fitScale < 1.0), the textPainter is actually LARGER (intrinsic).
-    // BUT we scaled the canvas.
-    // When we use `inverse` matrix, we are effectively "un-scaling" the global touch if the layer.scale was applied.
-    // Wait, layer.matrix includes `layer.scale`. It does NOT include `fitScale` which is internal to paint().
+    final info = layer.computePaintInfo();
+    final fitScale = info.fitScale == 0 ? 1.0 : info.fitScale;
 
-    // If `fitScale` is active, the visual content is smaller than intrinsic.
-    // Our `inverse` gives us coordinates in the layer's space (where scale=1 relative to layer).
-    // But inside paint(), we did `canvas.scale(fitScale)`.
-    // So the content is drawn at `fitScale` size.
-    // So a point `p` in layer space corresponds to `p / fitScale` in painter space?
+    // Calculate visual dimensions
+    final visualW = info.painter.width * fitScale;
+    final visualH = info.painter.height * fitScale;
 
-    // Let's check `paint()`:
-    // canvas.scale(fitScale, fitScale);
-    // textPainter.paint(canvas, intrinsicOffset);
+    // Calculate Centering Offset (inside Box)
+    // Box Size is info.size
+    final alignDx = (info.size.width - visualW) / 2;
+    final alignDy = (info.size.height - visualH) / 2;
 
-    // So if I touch at 100 (layer space), and fitScale is 0.5.
-    // Visual point is 100.
-    // In painter space, that should be 200.
-    // So we need to divide by fitScale.
+    // Calculate Paint Offset (TopLeft relative to Center)
+    final paintOffset = Offset(-info.size.width / 2, -info.size.height / 2);
 
-    double fitScale = layer.debugFitScale; // Using the exposed debug property or recalculate
-    if (fitScale == 0) fitScale = 1.0;
+    // Origin of Text Draw in Local Space
+    final textOrigin = paintOffset + Offset(alignDx, alignDy);
 
-    // Also need the intrinsic size for the offset shift
-    final intrinsicPainter = TextPainter(
-      text: TextSpan(text: layer.text, style: layer.style),
-      textDirection: TextDirection.ltr,
-    );
-    // Apply wrapping if needed to match what was painted
-    if (layer.customWidth != null && layer.text.contains(' ')) {
-       intrinsicPainter.layout(maxWidth: layer.customWidth!);
-    } else {
-       intrinsicPainter.layout();
-    }
+    // Point relative to Text Origin
+    final pointRelativeText = localPoint - textOrigin;
 
-    // The offset used in paint was (-width/2, -height/2)
-    final halfW = intrinsicPainter.width / 2;
-    final halfH = intrinsicPainter.height / 2;
+    // Un-scale
+    final pointInPainter = pointRelativeText / fitScale;
 
-    // Transform local point to painter space
-    final painterX = (localCenterPoint.dx / fitScale) + halfW;
-    final painterY = (localCenterPoint.dy / fitScale) + halfH;
-
-    return intrinsicPainter
-        .getPositionForOffset(Offset(painterX, painterY))
+    return info.painter
+        .getPositionForOffset(pointInPainter)
         .offset
         .clamp(0, layer.text.length);
   }
 
   TextSelection _getWordSelection(TextLayer layer, int index) {
-    final textPainter = TextPainter(
-      text: TextSpan(text: layer.text, style: layer.style),
-      textDirection: TextDirection.ltr,
-    );
-    textPainter.layout();
-    final range = textPainter.getWordBoundary(TextPosition(offset: index));
+    final info = layer.computePaintInfo();
+    final range = info.painter.getWordBoundary(TextPosition(offset: index));
     return TextSelection(baseOffset: range.start, extentOffset: range.end);
   }
 
@@ -637,12 +586,6 @@ class _EditorCanvasState extends State<EditorCanvas> {
     if (activeLayer == null) {
       setState(() => _cursor = SystemMouseCursors.basic);
       return;
-    }
-    if (activeLayer is TextLayer && activeLayer!.isEditing) {
-      if (_isPointInsideLayer(activeLayer!, localPoint)) {
-        setState(() => _cursor = SystemMouseCursors.text);
-        return;
-      }
     }
     final handle = _getHandleAtPoint(activeLayer!, localPoint);
     SystemMouseCursor newCursor = SystemMouseCursors.basic;

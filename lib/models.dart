@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'dart:ui' as ui;
 
 // Constants
-const double handleRadius = 9.0;
-const double rotationHandleDistance = 30.0;
+const double kHandleRadius = 9.0;
+const double kRotationHandleDistance = 30.0;
+const double kTextSafetyMargin = 16.0; // Pro-Grade Safety Margin
 
 class EditorComposition {
   Size dimension;
@@ -46,18 +47,34 @@ abstract class BaseLayer {
   Size get size;
 }
 
+class TextPaintInfo {
+  final Size size;
+  final double fitScale;
+  final TextPainter painter;
+
+  TextPaintInfo({
+    required this.size,
+    required this.fitScale,
+    required this.painter,
+  });
+}
+
 class TextLayer extends BaseLayer {
   String text;
   TextStyle style;
-  Size _cachedSize = Size.zero;
 
-  TextSelection selection;
-  bool showCursor;
-
+  // Logical Constraints
   double? customWidth;
   bool enableAutoFit;
 
-  // Exposed for testing
+  // State for Selection/Interaction
+  TextSelection selection;
+  bool showCursor;
+
+  // Caching
+  TextPaintInfo? _cachedInfo;
+
+  // Debug
   double debugFitScale = 1.0;
 
   TextLayer({
@@ -74,11 +91,11 @@ class TextLayer extends BaseLayer {
   });
 
   @override
-  Size get size => _cachedSize;
+  Size get size => _cachedInfo?.size ?? Size.zero;
 
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Pre-calculate intrinsic width to decide logic
+  // --- PRO-GRADE LOGIC ENGINE ---
+  TextPaintInfo computePaintInfo() {
+    // 1. Measure Intrinsic Size
     final intrinsicPainter = TextPainter(
       text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
@@ -86,107 +103,112 @@ class TextLayer extends BaseLayer {
     intrinsicPainter.layout();
     final maxIntrinsicWidth = intrinsicPainter.width;
 
+    // 2. Determine Effective & Fit Scale
     double fitScale = 1.0;
-    double? layoutWidth;
+    double? layoutMaxWidth;
 
     if (customWidth != null) {
+      // Unbounded Box Logic:
+      // If customWidth is LARGER than intrinsic, use customWidth for box, but 1.0 scale.
+      // If customWidth is SMALLER, we must adapt.
+
       final hasSpaces = text.contains(' ');
 
-      // Scenario A (Sentence): If spaces exist, use standard wrapping
-      if (hasSpaces) {
-        layoutWidth = customWidth;
-      }
-      // Scenario B (Long Word): If NO spaces and textWidth > customWidth, auto-fit
-      else if (enableAutoFit && maxIntrinsicWidth > customWidth!) {
-        // SMART CONSTRAINT: Unbounded Box
-        // If customWidth is LARGER than intrinsic, we do NOT scale up.
-        // We only scale DOWN.
-
-        // Also add SAFETY MARGIN (8px)
-        final effectiveWidth = customWidth! - 8.0;
-
-        // If customWidth is very small (e.g. < 8), effectiveWidth is negative.
-        // We must ensure a minimum effective width to avoid crash or negative scale.
-        final safeEffectiveWidth = effectiveWidth > 1.0 ? effectiveWidth : 1.0;
-
-        if (safeEffectiveWidth < maxIntrinsicWidth) {
-           fitScale = safeEffectiveWidth / maxIntrinsicWidth;
-        } else {
-           // Text fits comfortably, no scaling needed.
-           fitScale = 1.0;
-        }
+      if (customWidth! > maxIntrinsicWidth) {
+        // Unbounded Mode: Box is wider than text.
+        // No wrapping needed, no scaling needed.
+        // Text will be drawn centered (or aligned) in the wide box.
+        // We set layoutMaxWidth to null (unlimited) or customWidth?
+        // If we want alignment, we might want to layout with minWidth=customWidth.
+        // But for now, we just want the BOX to report size = customWidth.
       } else {
-        // Fallback: If Custom Width is set but text fits, OR auto-fit disabled.
-        // UNBOUNDED BOX LOGIC:
-        // If customWidth is defined, and it's larger than intrinsic, we should use customWidth for the border
-        // but draw text centered/unscaled.
+        // Constrained Mode: Box is narrower than text.
+        if (hasSpaces) {
+          // Wrap Text
+          // Apply Safety Margin for wrapping too, as per spec ("Text must never touch the exact border")
+          layoutMaxWidth = customWidth! - kTextSafetyMargin;
+        } else if (enableAutoFit) {
+          // Auto-Fit Single Word
+          // Apply Safety Margin
+          final effectiveWidth = customWidth! - kTextSafetyMargin;
+          final safeWidth = effectiveWidth > 1.0 ? effectiveWidth : 1.0;
+
+          if (safeWidth < maxIntrinsicWidth) {
+            fitScale = safeWidth / maxIntrinsicWidth;
+          }
+        }
       }
     }
 
     debugFitScale = fitScale;
 
+    // 3. Final Layout
     final textPainter = TextPainter(
       text: TextSpan(text: text, style: style),
       textDirection: TextDirection.ltr,
     );
 
-    // Apply layout width if wrapping
-    if (layoutWidth != null) {
-       textPainter.layout(maxWidth: layoutWidth);
+    if (layoutMaxWidth != null) {
+      textPainter.layout(maxWidth: layoutMaxWidth);
     } else {
-       textPainter.layout();
+      textPainter.layout();
     }
 
-    _cachedSize = textPainter.size;
+    // 4. Calculate Visual Box Size
+    // If fitScale < 1.0, the "Visual" size is smaller.
+    // If Unbounded (customWidth > intrinsic), the "Visual" box is customWidth.
 
-    // UNBOUNDED BOX FIX:
-    // If customWidth is set and larger than intrinsic size, we want the "Box" (cachedSize) to match customWidth.
-    // The text will be drawn centered within it.
-    if (customWidth != null && customWidth! > _cachedSize.width) {
-      // Create a size that respects customWidth but keeps height (unless wrapping changed height)
-      _cachedSize = Size(customWidth!, _cachedSize.height);
+    double boxWidth = textPainter.width * fitScale;
+    double boxHeight = textPainter.height * fitScale;
+
+    if (customWidth != null && customWidth! > boxWidth) {
+      boxWidth = customWidth!;
     }
 
-    // If we are scaling down a single word, the visual size is effectively smaller
-    // but the painter reports original size. We need to adjust drawing.
+    return TextPaintInfo(
+      size: Size(boxWidth, boxHeight),
+      fitScale: fitScale,
+      painter: textPainter,
+    );
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    _cachedInfo = computePaintInfo();
+    final info = _cachedInfo!;
+
+    // We draw centered at (0,0) of the layer's coordinate system (which is at position)
+    // The layer system has already applied Rotation & Zoom Scale (super.matrix).
+    // Now we apply "Fit Scale".
+
+    final paintOffset = Offset(-info.size.width / 2, -info.size.height / 2);
 
     canvas.save();
 
-    if (fitScale != 1.0) {
-      // Scale around center
-      canvas.scale(fitScale, fitScale);
+    // Check if we need to align text within the Unbounded Box
+    // If fitScale == 1.0 and customWidth > textWidth, text is smaller than box.
+    // Default alignment: Center.
+    // Calculate offset to center the text in the box.
 
-      // If we scaled down, the "effective" size for border drawing should probably reflect that?
-      // Or does the border stay large?
-      // The prompt says "Auto-Fit (Scale Down) ... to fit the text visually."
-      // If we scale the canvas, the text draws smaller.
-      // But _cachedSize (used for hit testing and border) is currently the UN-SCALED size.
-      // This means the border will appear huge around the tiny text if we don't adjust _cachedSize or the border drawing.
+    // Visual Text Size
+    final visualTextWidth = info.painter.width * info.fitScale;
+    final visualTextHeight = info.painter.height * info.fitScale;
 
-      // However, the prompt says "simulate dragging... assert customWidth updates, but scale remains 1.0".
-      // This implies `layer.scale` is 1.0. The "fitScale" is local to painting.
+    // Center in Box
+    final dx = (info.size.width - visualTextWidth) / 2;
+    final dy = (info.size.height - visualTextHeight) / 2;
 
-      // If I leave _cachedSize as intrinsic size, the border will be drawn around the large intrinsic text,
-      // but the text itself is scaled down.
-      // To make it look "fitted", I should update _cachedSize to the Scaled size.
+    // Total translation = Box Origin + Centering Offset
+    final textDrawOrigin = paintOffset + Offset(dx, dy);
 
-      // BUT if we are in "Unbounded Box" mode (customWidth > width), we just updated _cachedSize above.
-      // If fitScale < 1.0, it means we are shrinking to fit customWidth.
-      // So _cachedSize should be customWidth?
-      // Yes: fitScale = customWidth / intrinsic.
-      // intrinsic * fitScale = customWidth.
-      // So effectively _cachedSize is correct if we assume it matches customWidth.
-
-      // Actually, if we scale the canvas, we scale everything drawn.
-      // So if _cachedSize = Intrinsic, and we scale by 0.5. The visual size is Intrinsic * 0.5.
-      // Which equals CustomWidth.
-      // So we should update _cachedSize to match the visual size.
-      _cachedSize = Size(textPainter.width * fitScale, textPainter.height * fitScale);
+    // Translate to text origin
+    canvas.translate(textDrawOrigin.dx, textDrawOrigin.dy);
+    // Apply Fit Scale
+    if (info.fitScale != 1.0) {
+      canvas.scale(info.fitScale, info.fitScale);
     }
 
-    final paintOffset = Offset(-_cachedSize.width / 2, -_cachedSize.height / 2);
-
-    // 1. Draw Selection Highlights
+    // Draw Selection Backgrounds (in text local coordinates)
     if (isEditing) {
       final selectionColor = Colors.blue.withValues(alpha: 0.3);
       final safeSelection = TextSelection(
@@ -195,80 +217,46 @@ class TextLayer extends BaseLayer {
       );
 
       if (!safeSelection.isCollapsed) {
-        final boxes = textPainter.getBoxesForSelection(safeSelection);
+        final boxes = info.painter.getBoxesForSelection(safeSelection);
         for (var box in boxes) {
-          // Adjust box for scale if necessary?
-          // If we scaled the canvas, the painter coordinates are in the unscaled space.
-          // Since we have `canvas.scale(fitScale)`, drawing the unscaled boxes will result in scaled visual boxes.
-          // BUT `paintOffset` is calculated from the SCALED size.
-          // We need to shift by the UN-SCALED offset if we are inside the scaled canvas context.
-
-          // Wait, if I update `_cachedSize` to be scaled, `paintOffset` is small.
-          // The painter thinks it is large.
-          // So `box` is large.
-          // `box.toRect().shift(...)` -> shifting large box by small offset.
-          // Then drawing on scaled canvas -> shrinks everything.
-
-          // Correct approach:
-          // Center the painter in the coordinate system.
-          // Painter size: W x H (Large)
-          // We want to draw it centered.
-          // Painter center is (W/2, H/2).
-          // We translate by (-W/2, -H/2).
-
-          final intrinsicOffset = Offset(-textPainter.width / 2, -textPainter.height / 2);
-          final rect = box.toRect().shift(intrinsicOffset);
-          canvas.drawRect(rect, Paint()..color = selectionColor);
+          canvas.drawRect(box.toRect(), Paint()..color = selectionColor);
         }
       }
     }
 
-    // 2. Draw Text
-    // Similarly, paint at intrinsic offset
-    final intrinsicOffset = Offset(-textPainter.width / 2, -textPainter.height / 2);
-    textPainter.paint(canvas, intrinsicOffset);
+    // Draw Text
+    info.painter.paint(canvas, Offset.zero);
 
-    // 3. Draw Cursor
+    // Draw Cursor
     if (isEditing && showCursor && selection.isCollapsed) {
       final safeOffset = selection.baseOffset.clamp(0, text.length);
-      final caretOffset = textPainter.getOffsetForCaret(
+      final caretOffset = info.painter.getOffsetForCaret(
         TextPosition(offset: safeOffset),
         Rect.zero,
       );
       final cursorHeight = text.isEmpty
           ? (style.fontSize ?? 30)
-          : textPainter.preferredLineHeight;
-
-      final p1 = intrinsicOffset + caretOffset;
-      final p2 = p1 + Offset(0, cursorHeight);
+          : info.painter.preferredLineHeight;
 
       canvas.drawLine(
-        p1,
-        p2,
+        caretOffset,
+        caretOffset + Offset(0, cursorHeight),
         Paint()
           ..color = Colors.blueAccent
-          ..strokeWidth = 2, // This stroke width will also be scaled if we aren't careful.
-                             // 2 / fitScale to maintain visual thickness?
-                             // For now leaving as is.
+          ..strokeWidth = 2 / (info.fitScale == 0 ? 1 : info.fitScale), // Counter-scale stroke?
       );
     }
 
-    // Restore canvas (remove fitScale) for Border drawing so border isn't scaled weirdly?
-    // Actually, if we scaled the text down, the border should also be around the small text.
-    // But if we use the `canvas.scale`, the border lines (stroke width) will also scale down.
-    // Usually UI handles shouldn't scale with the content "fit".
-
     canvas.restore();
 
-    // 4. Draw UI Border & Handles (Outside the scale transform)
+    // 5. Draw Handles & Border (On the Box Boundary)
     if (isSelected) {
-      // Now use the `_cachedSize` which we updated to be the visual size (scaled or wrapped).
-      final rect = paintOffset & _cachedSize;
+      final rect = paintOffset & info.size;
 
       final borderPaint = Paint()
         ..color = Colors.blueAccent
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5 / scale;
+        ..strokeWidth = 1.5 / scale; // User zoom scale
 
       _drawDashedRect(canvas, rect, borderPaint);
 
@@ -277,37 +265,25 @@ class TextLayer extends BaseLayer {
         ..color = Colors.blueAccent
         ..style = PaintingStyle.stroke
         ..strokeWidth = 2 / scale;
-      final radius = handleRadius / scale;
+      final radius = kHandleRadius / scale;
 
-      // Corner Handles
-      final corners = [
-        rect.topLeft,
-        rect.topRight,
-        rect.bottomLeft,
-        rect.bottomRight,
-      ];
-      for (var point in corners) {
+      // Corners
+      for (var point in [rect.topLeft, rect.topRight, rect.bottomLeft, rect.bottomRight]) {
         canvas.drawCircle(point, radius, handleFill);
         canvas.drawCircle(point, radius, handleStroke);
       }
 
-      // SIDE HANDLES (New)
-      final sideHandles = [
-        rect.centerLeft,
-        rect.centerRight,
-      ];
-      // Only draw side handles if we are in a mode that supports it? Always for Text.
-      for (var point in sideHandles) {
-        // Maybe use a different visual for side handles? Vertical pill?
-        // Prompt just says "Side Handles". Circle is fine.
+      // Sides
+      for (var point in [rect.centerLeft, rect.centerRight]) {
         canvas.drawCircle(point, radius, handleFill);
         canvas.drawCircle(point, radius, handleStroke);
       }
 
+      // Rotation
       final topCenter = rect.topCenter;
       final rotPos = Offset(
         topCenter.dx,
-        topCenter.dy - (rotationHandleDistance / scale),
+        topCenter.dy - (kRotationHandleDistance / scale),
       );
       canvas.drawLine(topCenter, rotPos, borderPaint);
       canvas.drawCircle(rotPos, radius, handleFill);
