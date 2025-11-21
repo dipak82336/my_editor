@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:ui' as ui;
+import 'dart:math' as math;
 
 // Constants
 const double kHandleRadius = 9.0;
@@ -126,7 +127,8 @@ class TextLayer extends BaseLayer {
         if (hasSpaces) {
           // Wrap Text
           // Apply Safety Margin for wrapping too, as per spec ("Text must never touch the exact border")
-          layoutMaxWidth = customWidth! - kTextSafetyMargin;
+          // Ensure we don't pass negative width to layout
+          layoutMaxWidth = math.max(1.0, customWidth! - kTextSafetyMargin);
         } else if (enableAutoFit) {
           // Auto-Fit Single Word
           // Apply Safety Margin

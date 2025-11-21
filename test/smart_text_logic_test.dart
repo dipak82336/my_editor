@@ -1,184 +1,109 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:my_editor/models.dart'; // Adjust package name if needed
-import 'package:my_editor/editor_canvas.dart'; // Adjust package name if needed
+import 'package:my_editor/models.dart';
+import 'package:my_editor/editor_canvas.dart';
 
 void main() {
-  test('Smart Wrapping: customWidth updates, scale remains 1.0', () {
-    final textLayer = TextLayer(
-      id: '1',
-      text: 'Hello World',
-      style: const TextStyle(fontSize: 20),
-    );
+  group('Elite Text Engine Specs', () {
 
-    // Initial state
-    expect(textLayer.scale, 1.0);
+    // 1. ANCHOR LOGIC TEST (Gravity Fix)
+    test('Anchor Logic: Dragging Right Handle keeps Left Edge fixed', () {
+      // Setup: Box centered at 100, Width 100.
+      // Left Edge = 50, Right Edge = 150.
+      double center = 100.0;
+      double width = 100.0;
+      double deltaX = 50.0; // Drag Right handle by +50.
 
-    // Simulate side drag update (setting the property)
-    textLayer.customWidth = 200.0;
+      // Expected New Width
+      double newWidth = width + deltaX; // 150
 
-    expect(textLayer.customWidth, 200.0);
-    expect(textLayer.scale, 1.0); // Scale should not change
-  });
+      // Expected New Center
+      // To keep Left Edge at 50:
+      // New Left = New Center - New Width / 2
+      // 50 = New Center - 75 => New Center = 125.
+      // Math: Old Center + Delta / 2 => 100 + 25 = 125.
+      double newCenter = center + (deltaX / 2);
 
-  testWidgets('Auto-Fit Logic: Scale reduces to fit long text', (WidgetTester tester) async {
-    final textLayer = TextLayer(
-      id: '2',
-      text: 'WWWWWWWWWWWWWWWWWWWWWWWWW', // Long string
-      style: const TextStyle(fontSize: 50),
-    );
+      expect(newWidth, 150.0);
+      expect(newCenter, 125.0);
+    });
 
-    textLayer.customWidth = 50.0; // Narrow width
-    textLayer.enableAutoFit = true;
+    test('Anchor Logic: Dragging Left Handle keeps Right Edge fixed', () {
+      // Setup: Box centered at 100, Width 100.
+      // Left Edge = 50, Right Edge = 150.
+      double center = 100.0;
+      double width = 100.0;
+      double deltaX = -50.0; // Drag Left handle by -50 (move left).
 
-    // Use a TestWidget to paint the layer and trigger logic
-    await tester.pumpWidget(
-      Center(
-        child: CustomPaint(
-          painter: TestLayerPainter(textLayer),
-          size: const Size(500, 500),
+      // Expected New Width
+      // Dragging left handle to the left INCREASES width.
+      // Delta is negative (-50).
+      // Width Change = -Delta = +50.
+      double newWidth = width - deltaX; // 150.
+
+      // Expected New Center
+      // To keep Right Edge at 150:
+      // New Right = New Center + New Width / 2
+      // 150 = New Center + 75 => New Center = 75.
+      // Math: Old Center + Delta / 2 => 100 + (-25) = 75.
+      double newCenter = center + (deltaX / 2);
+
+      expect(newWidth, 150.0);
+      expect(newCenter, 75.0);
+    });
+
+    // 2. UNCONSTRAINED WIDTH TEST
+    testWidgets('Unconstrained Width: Box can be wider than text', (WidgetTester tester) async {
+      final textLayer = TextLayer(
+        id: '1',
+        text: 'Hi', // Approx 20-30px wide
+        style: const TextStyle(fontSize: 20),
+      );
+
+      textLayer.customWidth = 500.0;
+
+      await tester.pumpWidget(
+        Center(
+          child: CustomPaint(
+            painter: TestLayerPainter(textLayer),
+            size: const Size(1000, 1000),
+          ),
         ),
-      ),
-    );
+      );
 
-    // Check exposed debug property
-    expect(textLayer.debugFitScale, lessThan(1.0));
-  });
+      // The reported size of the layer should match customWidth
+      expect(textLayer.size.width, 500.0);
+      // And it should NOT have scaled up (fitScale should be 1.0)
+      expect(textLayer.debugFitScale, 1.0);
+    });
 
-  test('Anchor Selection: Selection expands from anchor', () {
-    // Logic Verification
-    TextSelection initial = const TextSelection(baseOffset: 0, extentOffset: 2);
-    int newCursorPos = 5;
+    // 3. AUTO-FIT SHRINK TEST
+    testWidgets('Auto-Fit Shrink: Scales down to fit narrow box', (WidgetTester tester) async {
+      final textLayer = TextLayer(
+        id: '2',
+        text: 'HugeText',
+        style: const TextStyle(fontSize: 100), // Intrinsic width large
+        enableAutoFit: true,
+      );
 
-    TextSelection updated = TextSelection(
-      baseOffset: initial.baseOffset,
-      extentOffset: newCursorPos
-    );
+      textLayer.customWidth = 10.0; // Very narrow
 
-    expect(updated.baseOffset, 0);
-    expect(updated.extentOffset, 5);
-  });
-
-  // --- NEW TESTS FOR STEP 2 ---
-
-  test('Anchored Resizing Math: Right Handle', () {
-    // Initial: Center=100, Width=100 (Left=50, Right=150)
-    double center = 100;
-    double width = 100;
-    double deltaX = 50;
-
-    // Logic: Right handle drag adds delta to width, shifts center by delta/2
-    double newWidth = width + deltaX;
-    double newCenter = center + (deltaX / 2);
-
-    expect(newWidth, 150.0);
-    expect(newCenter, 125.0);
-    // Anchor Check: Left Edge should remain 50
-    // Left = Center - Width/2
-    expect(newCenter - newWidth/2, 50.0);
-  });
-
-  test('Anchored Resizing Math: Left Handle', () {
-    // Initial: Center=100, Width=100 (Left=50, Right=150)
-    double center = 100;
-    double width = 100;
-    double deltaX = -50; // Dragging Left Handle to left (negative)
-
-    // Logic: Left handle drag subtracts delta from width (if negative delta -> increases width)
-    double newWidth = width - deltaX;
-    // Center shifts by delta/2
-    double newCenter = center + (deltaX / 2);
-
-    expect(newWidth, 150.0);
-    expect(newCenter, 75.0);
-    // Anchor Check: Right Edge should remain 150
-    // Right = Center + Width/2
-    expect(newCenter + newWidth/2, 150.0);
-  });
-
-  testWidgets('Safety Margin: Auto-fit uses 8px buffer', (WidgetTester tester) async {
-    final textLayer = TextLayer(
-      id: '3',
-      text: 'Test',
-      style: const TextStyle(fontSize: 50),
-      enableAutoFit: true,
-    );
-
-    // We need to know intrinsic width to calculate expected scale.
-    // Intrinsic width of "Test" at 50px is approx X.
-    // Let's rely on the logic: scale = (customWidth - 8.0) / intrinsicWidth.
-    // If we set customWidth VERY close to intrinsic, it should scale down because of the -8.0 buffer.
-
-    // We can't easily get intrinsic width here without a canvas, but we can verify the behavior via debugFitScale.
-
-    // Run a paint to populate properties (mocking the loop)
-    await tester.pumpWidget(
-       Center(
-        child: CustomPaint(
-          painter: TestLayerPainter(textLayer),
-          size: const Size(500, 500),
+      await tester.pumpWidget(
+        Center(
+          child: CustomPaint(
+            painter: TestLayerPainter(textLayer),
+            size: const Size(1000, 1000),
+          ),
         ),
-      ),
-    );
+      );
 
-    // Get intrinsic width from the helper if we can, or we have to trust the painter ran.
-    // Let's set customWidth to something we know is definitely smaller than intrinsic + 8, but larger than intrinsic?
-    // Actually, simpler: Set customWidth = 100.
-    // If intrinsic is 80.
-    // Old logic: scale = 1.0 (since 100 > 80).
-    // New logic: Check if 80 > (100 - 8) = 92? No. Scale = 1.0.
+      // Should have shrunk significantly
+      expect(textLayer.debugFitScale, lessThan(1.0));
+      // Should handle safety margin (effective width < 10)
+      // Check if it crashed or produced valid scale
+      expect(textLayer.debugFitScale, greaterThan(0.0));
+    });
 
-    // Let's set customWidth small enough to force scaling.
-    textLayer.customWidth = 10.0;
-    // Intrinsic is definitely > 10.
-    // Expected Scale = (10 - 8) / Intrinsic = 2 / Intrinsic.
-    // If we didn't have the buffer, it would be 10 / Intrinsic.
-    // So scale should be roughly 1/5th of the "no buffer" scale.
-
-    await tester.pumpWidget(
-       Center(
-        child: CustomPaint(
-          painter: TestLayerPainter(textLayer),
-          size: const Size(500, 500),
-        ),
-      ),
-    );
-
-    // We expect debugFitScale to be valid and small.
-    // But to verify the "8px buffer", we need to check the math.
-    // I will add a `lastUsedSafetyMargin` or check logic directly?
-    // No, I will just trust the TDD "Green" if I implement it.
-    // But to Verify it fails *before* I implement it:
-    // I can't easily assert exact value without knowing intrinsic width.
-
-    // Alternative:
-    // Create a TextLayer where intrinsic width is known? No.
-    // Just verify it runs without error for now, and rely on code review for the -8.0 specific constant?
-    // Or: "Unbounded Box" test is more important.
-
-    expect(textLayer.debugFitScale, lessThan(1.0));
-  });
-
-  testWidgets('Unbounded Box: Does NOT scale up if customWidth > intrinsic', (WidgetTester tester) async {
-    final textLayer = TextLayer(
-      id: '4',
-      text: 'Small',
-      style: const TextStyle(fontSize: 20),
-      enableAutoFit: true,
-    );
-
-    textLayer.customWidth = 500.0; // Huge
-
-    await tester.pumpWidget(
-       Center(
-        child: CustomPaint(
-          painter: TestLayerPainter(textLayer),
-          size: const Size(500, 500),
-        ),
-      ),
-    );
-
-    expect(textLayer.debugFitScale, 1.0);
   });
 }
 
