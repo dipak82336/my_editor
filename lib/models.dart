@@ -50,6 +50,7 @@ class TextLayer extends BaseLayer {
   String text;
   TextStyle style;
   Size _cachedSize = Size.zero;
+  double? customWidth; // Added for Smart Fit
 
   TextSelection selection;
   bool showCursor;
@@ -60,6 +61,7 @@ class TextLayer extends BaseLayer {
     super.position,
     super.rotation,
     super.scale,
+    this.customWidth,
     this.style = const TextStyle(fontSize: 30, color: Colors.black),
     this.selection = const TextSelection.collapsed(offset: 0),
     this.showCursor = false,
@@ -75,11 +77,36 @@ class TextLayer extends BaseLayer {
       textDirection: TextDirection.ltr,
     );
     textPainter.layout();
-    _cachedSize = textPainter.size;
 
-    final paintOffset = Offset(-_cachedSize.width / 2, -_cachedSize.height / 2);
+    // --- Smart Fit Logic ---
+    final intrinsicWidth = textPainter.width;
+    final intrinsicHeight = textPainter.height;
+    final boxWidth = customWidth ?? intrinsicWidth;
+
+    // Determine scale factor to fit text inside boxWidth (if text is larger)
+    double contentScale = 1.0;
+    if (intrinsicWidth > boxWidth) {
+      contentScale = boxWidth / intrinsicWidth;
+    }
+
+    // Recalculate size based on boxWidth (or intrinsic if larger/null)
+    // NOTE: We use boxWidth for the boundary. Height scales with contentScale.
+    final scaledHeight = intrinsicHeight * contentScale;
+    _cachedSize = Size(boxWidth, scaledHeight);
+
+    // Center the drawing operations
+    final paintOffset = Offset(-boxWidth / 2, -scaledHeight / 2);
 
     // 1. Draw Selection Highlights
+    canvas.save();
+    // We must apply the contentScale to the TEXT and HIGHLIGHTS, but NOT the UI Handles.
+    // However, we usually paint everything relative to center.
+    // Let's translate to top-left of the box
+    canvas.translate(paintOffset.dx, paintOffset.dy);
+    canvas.scale(contentScale, contentScale);
+
+    // Now we are at (0,0) of the scaled text content.
+
     if (isEditing) {
       final selectionColor = Colors.blue.withValues(alpha: 0.3);
       final safeSelection = TextSelection(
@@ -90,14 +117,14 @@ class TextLayer extends BaseLayer {
       if (!safeSelection.isCollapsed) {
         final boxes = textPainter.getBoxesForSelection(safeSelection);
         for (var box in boxes) {
-          final rect = box.toRect().shift(paintOffset);
+          final rect = box.toRect();
           canvas.drawRect(rect, Paint()..color = selectionColor);
         }
       }
     }
 
     // 2. Draw Text
-    textPainter.paint(canvas, paintOffset);
+    textPainter.paint(canvas, Offset.zero);
 
     // 3. Draw Cursor
     if (isEditing && showCursor && selection.isCollapsed) {
@@ -110,7 +137,7 @@ class TextLayer extends BaseLayer {
           ? (style.fontSize ?? 30)
           : textPainter.preferredLineHeight;
 
-      final p1 = paintOffset + caretOffset;
+      final p1 = caretOffset;
       final p2 = p1 + Offset(0, cursorHeight);
 
       canvas.drawLine(
@@ -118,13 +145,18 @@ class TextLayer extends BaseLayer {
         p2,
         Paint()
           ..color = Colors.blueAccent
-          ..strokeWidth = 2,
+          ..strokeWidth = 2 / contentScale, // Adjust stroke width to be consistent
       );
     }
 
-    // 4. Draw UI Border & Handles
+    canvas.restore(); // Restore scaling
+
+    // 4. Draw UI Border & Handles (No Content Scale)
     if (isSelected) {
-      final rect = paintOffset & _cachedSize;
+      // Use _cachedSize which is already set to (boxWidth, scaledHeight)
+      // Centered at (0,0)
+      final rect = Rect.fromCenter(
+          center: Offset.zero, width: _cachedSize.width, height: _cachedSize.height);
 
       final borderPaint = Paint()
         ..color = Colors.blueAccent

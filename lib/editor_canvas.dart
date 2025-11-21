@@ -4,6 +4,7 @@ import 'package:vector_math/vector_math_64.dart' show Vector3;
 import 'dart:math' as math;
 import 'dart:async';
 import 'models.dart';
+import 'logic_helper.dart';
 
 // મોબાઈલ માટે ટચ એરિયા મોટો રાખવો પડે (45px જેવો)
 const double TOUCH_TOLERANCE = 40.0;
@@ -221,6 +222,8 @@ class _EditorCanvasState extends State<EditorCanvas> {
     }
 
     // Body Check (આના માટે Inverse Matrix બરાબર છે)
+    // Debug print
+    // print("Checking body hit: Layer ${layer.id} at ${layer.position} with touch $globalTouch");
     if (_isPointInsideLayer(layer, globalTouch)) {
       return HandleType.body;
     }
@@ -366,17 +369,70 @@ class _EditorCanvasState extends State<EditorCanvas> {
         case HandleType.topRight:
         case HandleType.bottomLeft:
         case HandleType.topLeft:
-          // Scaling relative to Object Center
-          final currentDist = (localPoint - activeLayer!.position).distance;
-          if (_initialDistance != null && _initialDistance! > 0) {
-            final scaleFactor = currentDist / _initialDistance!;
-            activeLayer!.scale = _initialScale! * scaleFactor;
+          if (activeLayer is TextLayer) {
+            _handleTextResize(activeLayer as TextLayer, localPoint);
+          } else {
+            // Legacy scaling for non-text layers
+            final currentDist = (localPoint - activeLayer!.position).distance;
+            if (_initialDistance != null && _initialDistance! > 0) {
+              final scaleFactor = currentDist / _initialDistance!;
+              activeLayer!.scale = _initialScale! * scaleFactor;
+            }
           }
           break;
         default:
           break;
       }
     });
+  }
+
+  void _handleTextResize(TextLayer layer, Offset globalTouch) {
+    // 1. Calculate Global Delta from last touch
+    final globalDelta = globalTouch - _lastTouchLocalPoint!;
+    _lastTouchLocalPoint = globalTouch; // Update for next frame
+
+    // 2. Convert Global Delta to Local Delta (accounting for rotation)
+    // We use the inverse of the rotation matrix (only rotation, not translation/scale)
+    // Actually, simpler: project delta onto layer's axes.
+    // Or transform delta by inverse matrix (ignoring translation).
+    final invertedMatrix = Matrix4.tryInvert(layer.matrix);
+    if (invertedMatrix == null) return;
+
+    // Vector3(dx, dy, 0) transformed by inverse matrix gives local delta.
+    // Note: Transform3 applies translation too, which we don't want for a Delta.
+    // So we must zero out translation in the inverted matrix or use transform3 with 0 translation.
+    // But matrix includes translation which shifts point. Delta is vector.
+    // Use matrix.transposed()... no.
+    // Correct way:
+    // localDelta = InverseRotation * globalDelta.
+    // layer.rotation is Z rotation.
+    // We can manually rotate delta by -layer.rotation.
+
+    final cosA = math.cos(-layer.rotation);
+    final sinA = math.sin(-layer.rotation);
+    final localDeltaX = globalDelta.dx * cosA - globalDelta.dy * sinA;
+    // final localDeltaY = globalDelta.dx * sinA + globalDelta.dy * cosA; // We only care about X for width
+
+    // 3. Apply Anchor Rules based on Handle
+    bool isRightHandle = _currentHandle == HandleType.topRight ||
+        _currentHandle == HandleType.bottomRight;
+    bool isLeftHandle = _currentHandle == HandleType.topLeft ||
+        _currentHandle == HandleType.bottomLeft;
+
+    // Ensure customWidth is initialized
+    if (layer.customWidth == null) {
+      layer.customWidth = layer.size.width;
+    }
+
+    final result = LogicHelper.calculateTextResize(
+      layer: layer,
+      localDelta: Offset(localDeltaX, 0), // Y delta ignored for width
+      isRightHandle: isRightHandle,
+      isLeftHandle: isLeftHandle,
+    );
+
+    layer.customWidth = result.newWidth;
+    layer.position = result.newPosition;
   }
 
   // --- 3. Other Helpers (Tap, Text Index, Find Layer) ---
