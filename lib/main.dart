@@ -1,72 +1,58 @@
 import 'package:flutter/material.dart';
-import 'models.dart';
-import 'editor_canvas.dart';
+import 'package:flame/game.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'game/drishya_game.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const ProviderScope(child: DrishyaApp()));
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class DrishyaApp extends StatefulWidget {
+  const DrishyaApp({super.key});
+  @override
+  State<DrishyaApp> createState() => _DrishyaAppState();
+}
+
+class _DrishyaAppState extends State<DrishyaApp> {
+  final DrishyaGame game = DrishyaGame();
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Pro Editor',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(),
-      home: const EditorPage(),
-    );
-  }
-}
-
-class EditorPage extends StatefulWidget {
-  const EditorPage({super.key});
-
-  @override
-  State<EditorPage> createState() => EditorPageState();
-}
-
-@visibleForTesting
-class EditorPageState extends State<EditorPage> {
-  late EditorComposition composition;
-
-  @override
-  void initState() {
-    super.initState();
-    composition = EditorComposition(
-      dimension: const Size(1080, 1080),
-      backgroundColor: Colors.white,
-      layers: [
-        TextLayer(
-          id: '1',
-          text: 'Smart Text Editor',
-          position: Offset.zero,
-          style: const TextStyle(
-            fontSize: 50,
-            color: Colors.black,
-            fontWeight: FontWeight.bold,
-          ),
+      home: Scaffold(
+        body: Stack(
+          children: [
+            GameWidget(game: game),
+            Positioned(
+              bottom: 50,
+              right: 20,
+              child: FloatingActionButton.extended(
+                onPressed: () {
+                  game.toggleAI();
+                  setState(() {}); // To update UI text
+                },
+                backgroundColor: game.isAIActive ? Colors.green : Colors.red,
+                icon: Icon(game.isAIActive ? Icons.smart_toy : Icons.person),
+                label: Text(game.isAIActive ? "AUTO-PILOT ON" : "ENABLE AUTO-PILOT"),
+              ),
+            ),
+            const Positioned(
+              top: 40,
+              left: 20,
+              child: Text(
+                "DRISHYA: THE ETERNAL PATH",
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  shadows: [Shadow(blurRadius: 10, color: Colors.black)]
+                ),
+              )
+            )
+          ],
         ),
-        TextLayer(
-          id: '2',
-          text: 'Double Tap Me!',
-          position: const Offset(0, 200),
-          rotation: -0.1,
-          style: const TextStyle(fontSize: 40, color: Colors.purple),
-        ),
-      ],
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Advanced Editor Engine"),
-        backgroundColor: Colors.black,
       ),
-      body: EditorCanvas(composition: composition),
     );
   }
 }
